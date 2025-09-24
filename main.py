@@ -9,11 +9,11 @@
 # MTA question RFC 5321 (2.3.3)
 # A proper smtp application should definitely act as MTA (even server).
 # But for recreational and educational purposes I'll split SMTP as client/server arch.
-# After that i'll implement someday relaying logic for smtp servers
-# Probably it would change in forseen future
+# After that i'll implement someday relaying logic for smtp servers.
+# Probably it would change in forseen future.
+
+# For testing I used aiosmtpd (https://github.com/aio-libs/aiosmtpd) smtp server. Big thanks to developers.
 import socket
-import io
-import datetime
 import logging
 import argparse
 
@@ -31,31 +31,50 @@ def handle_sigint(signum, frame):
 
 class SMTPClient:
 
-    def __init__(self, arguments: argparse.Namespace):
+    def __init__(self, arguments: argparse.Namespace): # TODO: Make own abstraction so args could be passed as a lib or cli
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.arguments = arguments
-        self.__connnect_to_server()
+        self.__connect_to_server()
 
     # decorator to process server response after every command
     def after_call(func):
         @wraps(func)
         def inner(self, *args, **kwargs):
             result = func(self, *args, **kwargs)
-            self.__process_server_response()
+            self._process_server_response()
             return result
         return inner
 
     def send_smtp_message(self):
         self._send_ehlo()
         self._send_mail_from()
-        self._send_mail_to()
+        for rcpt in self.arguments.recipients:
+            self._send_rcpt_to(rcpt)
         self._send_data()
+        self._send_data_body(self.arguments.file_path)
+        self._send_quit()
 
     def _read_file(self, path: str):
-        pass
+        with open(path) as file:
+            return file.read()
 
-    def _prepare_body(self, file_str: str):
-        pass
+    @after_call
+    def _send_data_body(self, file_path: str):
+        buff: str = self._read_file(file_path)
+        message = (
+        f"Subject: {self.arguments.subject}{CRLF}"
+        f"From: {self.arguments.sender}{CRLF}"
+        f"To: {", ".join(rcpt for rcpt in self.arguments.recipients)}{CRLF}"
+        f"{CRLF}"
+        f"{buff}{CRLF}"
+        f"{CRLF}"
+        f".{CRLF}"
+        )
+        self.sock.sendall(message.encode())
+
+    @after_call
+    def _send_quit(self):
+        self._send_custom_msg(f"QUIT".encode() + bCRLF)
 
     @after_call
     def _send_mail_from(self):
@@ -63,8 +82,8 @@ class SMTPClient:
 
     # TODO add multiple recipients support
     @after_call
-    def _send_mail_to(self):
-        self._send_custom_msg(f"MAIL TO: <{args.recipient}>".encode() + bSP + bCRLF)
+    def _send_rcpt_to(self, rcpt: str):
+        self._send_custom_msg(f"RCPT TO: <{rcpt}>".encode() + bSP + bCRLF)
 
     @after_call
     def _send_helo(self):
@@ -82,17 +101,18 @@ class SMTPClient:
         self.sock.send(msg)
         logging.info(f"SENT: {msg.decode().strip(CRLF)}")
 
-    def __process_server_response(self) -> None:
-        resp = self.sock.recv(DEFAULT_BUFFER)
-        code = self.__parse_resp_code(resp)
+    def _process_server_response(self) -> None:
+        lines = self._read_response()
+        for line in lines:
+            code = int(line[:3])
+            reply_code = SmtpReplyCode.from_code(code)
 
-        if code >= 400:
-            self.__handle_exception(code)
+            if code >= 400:
+                self.__handle_exception(code)
 
-        reply_code = SmtpReplyCode.from_code(code)
         logging.info("RECEIVED: " + f"{reply_code.code} {reply_code.reason}")
 
-    def __connnect_to_server(self) -> None:
+    def __connect_to_server(self) -> None:
         self.sock.connect((args.host, args.port))
         chunk = self.sock.recv(DEFAULT_BUFFER)
         code = int(chunk.decode().split(" ", 1)[0])
@@ -116,6 +136,19 @@ class SMTPClient:
         except Exception:
             return int(resp.split("-", 1)[0])
 
+    def _read_response(self) -> list[str]:
+        buffer = b""
+        while True:
+            chunk = self.sock.recv(DEFAULT_BUFFER)
+            if not chunk:
+                break
+            buffer += chunk
+            lines = buffer.decode().split(CRLF)
+            if lines[-2][:3].isdigit() and lines[-2][3:4] == " ":
+                break
+        return [line for line in buffer.decode().split(CRLF) if line]
+
+
     def __enter__(self):
         return self
 
@@ -133,14 +166,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
-    parser.add_argument("--recipient")
+    parser.add_argument("--recipients", nargs="+")
     parser.add_argument("--sender")
-    parser.add_argument("--message_path")
+    parser.add_argument("--subject")
     parser.add_argument("--file_path")
     args = parser.parse_args()
 
-    if not email_validation_regex.match(args.recipient):
-        raise Exception("Provided recipient email is incorrect")
+    for rcpt in args.recipients:
+        if not email_validation_regex.match(rcpt):
+            raise Exception("Provided recipient email is incorrect " + rcpt)
 
     if not email_validation_regex.match(args.sender):
         raise Exception("Provided sender email is incorrect")
@@ -160,12 +194,13 @@ if __name__ == "__main__":
     # chunk = sock.recv(DEFAULT_BUFFER)
     # print(chunk)
     # print('=' * 20)
-    # sock.send(f"RCPt TO: <{args.recipient}>".encode() + bSP + bCRLF) # THIS CASE INSENSITIVE
+    # sock.send(f"RCPt TO: <{args.recipients[0]}>".encode() + bSP + bCRLF) # THIS CASE INSENSITIVE
     # chunk = sock.recv(DEFAULT_BUFFER)
     # print(chunk)
     # print('=' * 20)
     # sock.send(b"DATA" + bCRLF)
     # chunk = sock.recv(DEFAULT_BUFFER)
+    # print("AFTER DATA")
     # print(chunk)
     # print('=' * 20)
     # message = (
