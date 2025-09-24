@@ -5,11 +5,12 @@
 
 # SMTP is independent of the particular transmission subsystem and
 # requires only a reliable ordered data stream channel.
+# Unbelivebly I use TCP from TCP/IP stack for "reliable" data stream flow.
 
 # MTA question RFC 5321 (2.3.3)
 # A proper smtp application should definitely act as MTA (even server).
 # But for recreational and educational purposes I'll split SMTP as client/server arch.
-# After that i'll implement someday relaying logic for smtp servers.
+# After that I'll implement someday relaying logic for smtp servers.
 # Probably it would change in forseen future.
 
 # For testing I used aiosmtpd (https://github.com/aio-libs/aiosmtpd) smtp server. Big thanks to developers.
@@ -22,12 +23,6 @@ from functools import wraps
 from consts import *
 
 logging.basicConfig(level=logging.INFO)
-shutdown_flag = False
-
-def handle_sigint(signum, frame):
-    global shutdown_flag
-    logging.info("[!] Caught SIGINT, shutting down...")
-    shutdown_flag = True
 
 class SMTPClient:
 
@@ -46,11 +41,13 @@ class SMTPClient:
         return inner
 
     def send_smtp_message(self): # TODO: pass args here
-        self._send_helo()
+        self._send_hello()
+        self._send_noop(it_would_be_ignored_xD="yeah ignored")
         self._send_help()
+        self._send_verify(self.arguments.sender)
         self._send_mail_from()
         for rcpt in self.arguments.recipients:
-            self._send_rcpt_to(rcpt)
+            self._send_recipient_to(rcpt)
         self._send_data()
         self._send_data_body(self.arguments.file_path)
         self._send_quit()
@@ -73,12 +70,29 @@ class SMTPClient:
         )
         self.sock.sendall(message.encode())
 
-    @after_call
-    def _send_help(self):
-        self._send_custom_msg(b"HELP" + bCRLF)
+    # TODO: Auth command. Although, I didn't found it in specification, I guess I need to implement it
+    # as well as ssl.
 
     @after_call
-    def _send_rset(self):
+    def _send_verify(self, user: str):
+        self._send_custom_msg(b"VRFY" + bSP + user.encode() + bCRLF)
+
+    @after_call
+    def _send_expand(self, command: str): # COULD NOT TEST FOR THE MOMENT
+        self._send_custom_msg(b"EXPN" + bSP + command.encode() + bCRLF)
+
+    @after_call
+    def _send_noop(self, it_would_be_ignored_xD=""): # RFC 5321 (4.1.1.9 NOOP)
+        detail: bytes = f"{SP}{it_would_be_ignored_xD}".encode() if it_would_be_ignored_xD else b""
+        self._send_custom_msg(b"NOOP" + detail + bCRLF)
+
+    @after_call
+    def _send_help(self, command=""):
+        detail: bytes = f"{SP}{command}".encode() if command else b""
+        self._send_custom_msg(b"HELP" + detail + bCRLF)
+
+    @after_call
+    def _send_reset(self):
         self._send_custom_msg(b"RSET" + bCRLF)
 
     @after_call
@@ -91,15 +105,15 @@ class SMTPClient:
 
     # TODO add multiple recipients support
     @after_call
-    def _send_rcpt_to(self, rcpt: str):
+    def _send_recipient_to(self, rcpt: str):
         self._send_custom_msg(f"RCPT TO:<{rcpt}>".encode() + bCRLF)
 
     @after_call
-    def _send_helo(self):
+    def _send_hello(self):
         self._send_custom_msg(b"HELO" + bSP + self.arguments.host.encode()+ bCRLF)
 
     @after_call
-    def _send_ehlo(self):
+    def _send_ehlo(self): # TODO complete
         self._send_custom_msg(b"EHLO" + bSP + self.arguments.host.encode() + bCRLF)
 
     @after_call

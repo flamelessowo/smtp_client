@@ -7,6 +7,7 @@ SMTP_PORT = 25
 SMTP_SSL_PORT = 465
 CRLF = "\r\n"
 bCRLF = b"\r\n"
+SP = " "
 bSP = b" "
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 5454
