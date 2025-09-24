@@ -45,8 +45,9 @@ class SMTPClient:
             return result
         return inner
 
-    def send_smtp_message(self):
-        self._send_ehlo()
+    def send_smtp_message(self): # TODO: pass args here
+        self._send_helo()
+        self._send_help()
         self._send_mail_from()
         for rcpt in self.arguments.recipients:
             self._send_rcpt_to(rcpt)
@@ -73,25 +74,33 @@ class SMTPClient:
         self.sock.sendall(message.encode())
 
     @after_call
+    def _send_help(self):
+        self._send_custom_msg(b"HELP" + bCRLF)
+
+    @after_call
+    def _send_rset(self):
+        self._send_custom_msg(b"RSET" + bCRLF)
+
+    @after_call
     def _send_quit(self):
-        self._send_custom_msg(f"QUIT".encode() + bCRLF)
+        self._send_custom_msg(b"QUIT" + bCRLF)
 
     @after_call
     def _send_mail_from(self):
-        self._send_custom_msg(f"MAIL FROM: <{args.sender}>".encode() + bSP + bCRLF)
+        self._send_custom_msg(f"MAIL FROM:<{args.sender}>".encode() + bCRLF)
 
     # TODO add multiple recipients support
     @after_call
     def _send_rcpt_to(self, rcpt: str):
-        self._send_custom_msg(f"RCPT TO: <{rcpt}>".encode() + bSP + bCRLF)
+        self._send_custom_msg(f"RCPT TO:<{rcpt}>".encode() + bCRLF)
 
     @after_call
     def _send_helo(self):
-        self._send_custom_msg(b"HELO" + bSP + self.arguments.host.encode() + bSP + bCRLF)
+        self._send_custom_msg(b"HELO" + bSP + self.arguments.host.encode()+ bCRLF)
 
     @after_call
     def _send_ehlo(self):
-        self._send_custom_msg(b"EHLO" + bSP + self.arguments.host.encode() + bSP + bCRLF)
+        self._send_custom_msg(b"EHLO" + bSP + self.arguments.host.encode() + bCRLF)
 
     @after_call
     def _send_data(self):
@@ -102,7 +111,7 @@ class SMTPClient:
         logging.info(f"SENT: {msg.decode().strip(CRLF)}")
 
     def _process_server_response(self) -> None:
-        lines = self._read_response()
+        lines, buff = self._read_response()
         for line in lines:
             code = int(line[:3])
             reply_code = SmtpReplyCode.from_code(code)
@@ -110,7 +119,8 @@ class SMTPClient:
             if code >= 400:
                 self.__handle_exception(code)
 
-        logging.info("RECEIVED: " + f"{reply_code.code} {reply_code.reason}")
+        logging.info("RECEIVED: " + buff.decode().strip(CRLF))
+        logging.debug("EXPLAIN: " + f"{reply_code.code} {reply_code.reason}")
 
     def __connect_to_server(self) -> None:
         self.sock.connect((args.host, args.port))
@@ -136,7 +146,7 @@ class SMTPClient:
         except Exception:
             return int(resp.split("-", 1)[0])
 
-    def _read_response(self) -> list[str]:
+    def _read_response(self) -> tuple[list[str], bytes]:
         buffer = b""
         while True:
             chunk = self.sock.recv(DEFAULT_BUFFER)
@@ -146,7 +156,7 @@ class SMTPClient:
             lines = buffer.decode().split(CRLF)
             if lines[-2][:3].isdigit() and lines[-2][3:4] == " ":
                 break
-        return [line for line in buffer.decode().split(CRLF) if line]
+        return [line for line in buffer.decode().split(CRLF) if line], buffer
 
 
     def __enter__(self):
