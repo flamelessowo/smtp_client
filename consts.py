@@ -38,6 +38,7 @@ class SmtpReplyCode(StrEnum):
     COMMAND_NOT_IMPLEMENTED = "502 Command not implemented"
     BAD_SEQUENCE = "503 Bad sequence of commands"
     PARAMETER_NOT_IMPLEMENTED = "504 Command parameter not implemented"
+    MUST_STARTTLS = "530 Authentication required"
     MAILBOX_UNAVAILABLE_PERM = "550 Requested action not taken: mailbox unavailable"
     USER_NOT_LOCAL_PERM = "551 User not local; please try <forward-path>"
     EXCEEDED_STORAGE = "552 Requested mail action aborted: exceeded storage allocation"
