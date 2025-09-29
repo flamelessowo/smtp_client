@@ -1,19 +1,18 @@
-# UNSAFE IMPLEMENTATION OF OBSOLETE PROTOCOL SMTP client. (RECREATIONAL PROGRAMMING)
-# The purpose is not writing "pretty" code but to understand, more or less, what is SMTP about.
-# Also I ,sometimes, use old fashioned python to more or less deeply go into the problems.
+# UNSAFE IMPLEMENTATION OF OBSOLETE PROTOCOL SMTP client (and little of ESMPT). (RECREATIONAL PROGRAMMING)
+# The purpose is not writing "pretty" code, but to understand, more or less, what is the SMTP protocol.
+# Also I ,sometimes, use old fashioned python to, more or less, deeply dive into the problems related to network programming.
 # Followed by RFC 5321 (https://datatracker.ietf.org/doc/html/rfc5321).
 
 # SMTP is independent of the particular transmission subsystem and
 # requires only a reliable ordered data stream channel.
-# Unbelivebly I use TCP from TCP/IP stack for "reliable" data stream flow.
+# Unbelievably, I use the TCP, from TCP/IP stack, for it's "reliable" data stream flow.
 
 # MTA question RFC 5321 (2.3.3)
 # A proper smtp application should definitely act as MTA (even server).
 # But for recreational and educational purposes I'll split SMTP as client/server arch.
-# After that I'll implement someday relaying logic for smtp servers.
-# Probably it would change in forseen future.
+# After that I'll implement, someday, relaying logic for smtp servers.
 
-# For testing I used aiosmtpd (https://github.com/aio-libs/aiosmtpd) smtp server. Big thanks to developers.
+# For testing I used aiosmtpd (https://github.com/aio-libs/aiosmtpd) as esmtp server. Big thanks to it's developers!
 import socket
 import logging
 import argparse
@@ -34,7 +33,6 @@ except ImportError:
     _use_ssl = False
 else:
     _use_ssl = True
-import smtplib
 
 logging.basicConfig(level=logging.INFO)
 
@@ -47,7 +45,7 @@ class SMTPClient:
         self.sock = self._prepare_client_socket()
         self.arguments = arguments
         self.extensions = []
-        self.__connect_to_server()
+        self._connect_to_server()
 
     # decorator to process server response after every command
     def after_call(func):
@@ -62,6 +60,7 @@ class SMTPClient:
         self._send_ehlo()
         self._ext_starttls() # TODO: fallback if wrong downgrade to helo probably
         self._send_ehlo()
+        self._ext_auth_login(self.arguments.username, self.arguments.password)
         #self._send_noop(it_would_be_ignored_xD="yeah ignored")
         #self._send_help()
         #self._send_verify(self.arguments.sender)
@@ -150,14 +149,42 @@ class SMTPClient:
         self.sock.send(msg)
         logging.info(f"SENT: {msg.decode().strip(CRLF)}")
 
-    def _ext_starttls(self):
+    def _ext_starttls(self): # RFC 3207
         if not "starttls" in self.extensions:
             raise SMTPException(
                 "STARTTLS extension not supported by server.")
         self._send_custom_msg(b"STARTTLS" + bCRLF)
-        lines, _ = self._process_server_response()
+        lines, _ = self._process_server_response() # TODO finish
         context = ssl._create_stdlib_context()
         self.sock = context.wrap_socket(self.sock)
+
+# Auth exts, i won't implement only XOAUTH and PLAIN-CLIENTTOKEN on my opinion they obsolete
+    def _ext_auth_login(self, issuer: str, password: str): # RFC 4954
+        def __process_command():
+            lines, _ = self._process_server_response()
+            code = int(lines[0].split(" ")[0])
+            reply_code = SmtpReplyCode.from_code(code)
+            if code >= 400:
+                raise SMTPException(f"Auth login error: {reply_code.code} {reply_code.reason}")
+
+        self._send_custom_msg(b"AUTH LOGIN" + bCRLF)
+        __process_command()
+        
+        cmds = [issuer, password]
+        for cmd in cmds:
+            self._send_custom_msg(base64.b64encode(cmd.encode()) + bCRLF)
+            __process_command()
+            
+    @after_call
+    def _ext_auth_plain(self, issuer: str, password: str): # RFC 4954
+        auth_string = f"\0{issuer}\0{password}".encode()
+        self._send_custom_msg(b"AUTH PLAIN " + base64.b64encode(auth_string) + bCRLF)
+
+    def _ext_auth_xoauth2(self):
+        pass
+
+    def _ext_auth_oauthbearer(self):
+        pass
 
     def _process_server_response(self) -> tuple[list[str], bytes]:
         lines, buff = self._read_response()
@@ -166,31 +193,31 @@ class SMTPClient:
             reply_code = SmtpReplyCode.from_code(code)
 
             if code >= 400:
-                self.__handle_exception(code)
+                self._handle_exception(code)
 
         logging.info("RECEIVED: " + buff.decode().strip(CRLF))
         #logging.debug("EXPLAIN: " + f"{reply_code.code} {reply_code.reason}")
 
         return lines, buff
 
-    def __connect_to_server(self) -> None:
+    def _connect_to_server(self) -> None:
         self.sock.connect((args.host, args.port))
         chunk = self.sock.recv(DEFAULT_BUFFER)
         code = int(chunk.decode().split(" ", 1)[0])
 
         if code != SmtpReplyCode.SERVICE_READY.code:
-            self.__handle_exception(code)
+            self._handle_exception(code)
 
         reply_code = SmtpReplyCode.from_code(code)
         logging.info("RECEIVED: " + f"{reply_code.code} {reply_code.reason}")
 
-    def __handle_exception(self, code: int):
+    def _handle_exception(self, code: int):
         reply_code_member = SmtpReplyCode.from_code(code)
         error_str: str = f"Failed with {reply_code_member.code} code. Reason: {reply_code_member.reason}"
         logging.error(error_str)
         raise SMTPException(error_str)
     
-    def __parse_resp_code(self, res: bytes):
+    def _parse_resp_code(self, res: bytes):
         resp = res.decode()
         try:
             return int(resp.split(" ", 1)[0])
@@ -248,6 +275,10 @@ if __name__ == "__main__":
     parser.add_argument("--sender")
     parser.add_argument("--subject")
     parser.add_argument("--file_path")
+
+    # Auth
+    parser.add_argument("--username")
+    parser.add_argument("--password")
     args = parser.parse_args()
 
     for rcpt in args.recipients:

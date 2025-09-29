@@ -24,6 +24,7 @@ class SmtpReplyCode(StrEnum):
     CANNOT_VRFY_USER = "252 Cannot VRFY user, but will accept message"
 
     # 3xx Positive Intermediate
+    AUTH_CHALLENGE = "334 Server challenge for authentication"
     START_MAIL_INPUT = "354 Start mail input; end with <CRLF>.<CRLF>"
 
     # 4xx Transient Negative Completion
