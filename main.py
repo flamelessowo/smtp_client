@@ -19,28 +19,40 @@ import argparse
 import ssl
 
 # Auth module
-import hmac
+#import hmac
 import base64
-from email.base64mime import body_encode as encode_base64
+#from email.base64mime import body_encode as encode_base64
 
 from functools import wraps
 from typing import override
+from dataclasses import dataclass
 
 from consts import *
-
 
 logging.basicConfig(level=logging.INFO)
 
 class SMTPException(OSError):
     """Base class for all exceptions raised by this module."""
 
+
+@dataclass
+class SMTPMessage:
+    host: str
+    port: int
+    sender: str
+    recipients: list[str]
+    subject: str
+    file_path: str | None = None
+    message_body: str | None = ""
+    username: str | None = None
+    password: str | None = None
+
+
 class SMTPClient:
 
-    def __init__(self, arguments: argparse.Namespace): # TODO: Make own abstraction so args could be passed as a lib or cli
-        self.sock = self._prepare_client_socket()
-        self.arguments = arguments
+    def __init__(self):
+        self.sock = None
         self.extensions = []
-        self._connect_to_server()
 
     # decorator to process server response after every command
     def after_call(func):
@@ -51,21 +63,42 @@ class SMTPClient:
             return result
         return inner
 
-    def send_smtp_message(self): # TODO: pass args here
-        if self.arguments.port == SMTP_TLS_HANDSHAKE_PORT:
+    def send_smtp_message(self, message: SMTPMessage):
+        self.config = message
+        self._connect_to_server()
+        if self.config.port == SMTP_TLS_HANDSHAKE_PORT:
             self._send_ehlo()
             self._ext_starttls() # TODO: fallback if wrong downgrade to helo probably
         self._send_ehlo()
-        self._ext_auth_login(self.arguments.username, self.arguments.password)
+        try:
+            self._ext_auth_plain(self.config.username, self.config.password)
+        except SMTPException:
+            self._send_reset()
+            self._ext_auth_login(self.config.username, self.config.password)
         #self._send_noop(it_would_be_ignored_xD="yeah ignored")
         #self._send_help()
-        #self._send_verify(self.arguments.sender)
+        #self._send_verify(self.config.sender)
         self._send_mail_from()
-        for rcpt in self.arguments.recipients:
+        for rcpt in self.config.recipients:
             self._send_recipient_to(rcpt)
         self._send_data()
-        self._send_data_body(self.arguments.file_path)
+        self._send_data_body(file_path=self.config.file_path, message_body=self.config.message_body)
         self._send_quit()
+        self._cleanup()
+
+    def _cleanup(self):
+        if self.sock:
+            buff = b""
+            # Inform server that we would not write any data
+            self.sock.shutdown(socket.SHUT_WR)
+            # Exhaust buffer
+            while True:
+                buff = self.sock.recv(DEFAULT_BUFFER)
+                if not buff:
+                    break
+            self.sock.close()
+        self.sock = None
+        self.extensions = []
 
     def _prepare_client_socket(self) -> socket.socket:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -76,21 +109,21 @@ class SMTPClient:
             return file.read()
 
     @after_call
-    def _send_data_body(self, file_path: str):
-        buff: str = self._read_file(file_path)
+    def _send_data_body(self, file_path: str | None = None, message_body: str | None = ""):
+        if file_path:
+            buff: str = self._read_file(file_path)
+        else:
+            buff: str = message_body
         message = (
-        f"Subject: {self.arguments.subject}{CRLF}"
-        f"From: {self.arguments.sender}{CRLF}"
-        f"To: {", ".join(rcpt for rcpt in self.arguments.recipients)}{CRLF}"
+        f"Subject: {self.config.subject}{CRLF}"
+        f"From: {self.config.sender}{CRLF}"
+        f"To: {", ".join(rcpt for rcpt in self.config.recipients)}{CRLF}"
         f"{CRLF}"
         f"{buff}{CRLF}"
         f"{CRLF}"
         f".{CRLF}"
         )
         self.sock.sendall(message.encode())
-
-    # TODO: Auth command. Although, I didn't found it in specification, I guess I need to implement it
-    # as well as ssl.
 
     @after_call
     def _send_verify(self, user: str):
@@ -120,7 +153,7 @@ class SMTPClient:
 
     @after_call
     def _send_mail_from(self):
-        self._send_custom_msg(f"MAIL FROM:<{args.sender}>".encode() + bCRLF)
+        self._send_custom_msg(f"MAIL FROM:<{self.config.sender}>".encode() + bCRLF)
 
     # TODO add multiple recipients support
     @after_call
@@ -129,10 +162,10 @@ class SMTPClient:
 
     @after_call
     def _send_hello(self):
-        self._send_custom_msg(b"HELO" + bSP + self.arguments.host.encode()+ bCRLF)
+        self._send_custom_msg(b"HELO" + bSP + self.config.host.encode()+ bCRLF)
 
     def _send_ehlo(self): # TODO: collect stuff from server after ehlo and check later if extensions supported
-        self._send_custom_msg(b"EHLO" + bSP + self.arguments.host.encode() + bCRLF)
+        self._send_custom_msg(b"EHLO" + bSP + self.config.host.encode() + bCRLF)
         lines, _ = self._process_server_response()
         self.extensions = [line[4:].lower() for line in lines][1:]
         logging.info(f"EXTENSIONS FOUND: {self.extensions}")
@@ -197,7 +230,8 @@ class SMTPClient:
         return lines, buff
 
     def _connect_to_server(self) -> None:
-        self.sock.connect((args.host, args.port))
+        self.sock = self._prepare_client_socket()
+        self.sock.connect((self.config.host, self.config.port))
         chunk = self.sock.recv(DEFAULT_BUFFER)
         code = int(chunk.decode().split(" ", 1)[0])
 
@@ -237,30 +271,50 @@ class SMTPClient:
         return self
 
     def __exit__(self, exc_type, exc_value, exc_tb):
-        buff = b""
-        # Inform server that we would not write any data
-        self.sock.shutdown(socket.SHUT_WR)
-        # Exhaust buffer
-        while True:
-            buff = self.sock.recv(DEFAULT_BUFFER)
-            if not buff:
-                break
-        self.sock.close()
+        self._cleanup()
 
 class SSLSMTPWrapper(SMTPClient):
 
-    def __init__(self, arguments, context=None):
+    def __init__(self, context=None):
         if context is None:
             context = ssl._create_stdlib_context()
         self.context = context
 
-        super().__init__(arguments)
+        super().__init__()
 
     @override
     def _prepare_client_socket(self):
         self.sock = super()._prepare_client_socket()
         self.sock = self.context.wrap_socket(self.sock)
         return self.sock
+
+def send_single_smtp_message(args: SMTPMessage | argparse.Namespace): # TODO refactor, it's really bad as a library rn
+    for rcpt in args.recipients:
+        if not email_validation_regex.match(rcpt):
+            raise Exception("Provided recipient email is incorrect " + rcpt)
+
+    if not email_validation_regex.match(args.sender):
+        raise Exception("Provided sender email is incorrect")
+
+    if args.port not in [SMTP_SSL_PORT, SMTP_TLS_HANDSHAKE_PORT]:
+        raise Exception("Connections on not well-known ports not supoprted")
+
+    message = SMTPMessage(
+        host=args.host,
+        port=args.port,
+        sender=args.sender,
+        recipients=args.recipients,
+        subject=args.subject,
+        file_path=args.file_path,
+        message_body=args.message_body,
+        username=args.username,
+        password=args.password,
+    )
+
+    client_cls = SSLSMTPWrapper if args.port == SMTP_SSL_PORT else SMTPClient
+
+    with client_cls() as smtp_cli:
+        smtp_cli.send_smtp_message(message)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -269,24 +323,12 @@ if __name__ == "__main__":
     parser.add_argument("--recipients", nargs="+")
     parser.add_argument("--sender")
     parser.add_argument("--subject")
-    parser.add_argument("--file_path")
+    parser.add_argument("--file_path", default=None)
+    parser.add_argument("--message_body", default="")
 
     # Auth
     parser.add_argument("--username")
     parser.add_argument("--password")
     args = parser.parse_args()
 
-    for rcpt in args.recipients:
-        if not email_validation_regex.match(rcpt):
-            raise Exception("Provided recipient email is incorrect " + rcpt)
-
-    if not email_validation_regex.match(args.sender):
-        raise Exception("Provided sender email is incorrect")
-
-    if args.port == SMTP_SSL_PORT:
-        client = SSLSMTPWrapper
-    else:
-        client = SMTPClient
-
-    with client(args) as smtp_cli:
-        smtp_cli.send_smtp_message()
+    send_single_smtp_message(args)
