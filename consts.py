@@ -5,6 +5,7 @@ email_validation_regex = re.compile(r"^(?P<addr>[A-Za-z0-9._%+-]+)@(?P<host>[A-Z
 
 SMTP_PORT = 25
 SMTP_SSL_PORT = 465
+SMTP_TLS_HANDSHAKE_PORT = 587
 CRLF = "\r\n"
 bCRLF = b"\r\n"
 SP = " "

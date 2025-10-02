@@ -16,6 +16,7 @@
 import socket
 import logging
 import argparse
+import ssl
 
 # Auth module
 import hmac
@@ -27,12 +28,6 @@ from typing import override
 
 from consts import *
 
-try:
-    import ssl
-except ImportError:
-    _use_ssl = False
-else:
-    _use_ssl = True
 
 logging.basicConfig(level=logging.INFO)
 
@@ -57,8 +52,9 @@ class SMTPClient:
         return inner
 
     def send_smtp_message(self): # TODO: pass args here
-        self._send_ehlo()
-        self._ext_starttls() # TODO: fallback if wrong downgrade to helo probably
+        if self.arguments.port == SMTP_TLS_HANDSHAKE_PORT:
+            self._send_ehlo()
+            self._ext_starttls() # TODO: fallback if wrong downgrade to helo probably
         self._send_ehlo()
         self._ext_auth_login(self.arguments.username, self.arguments.password)
         #self._send_noop(it_would_be_ignored_xD="yeah ignored")
@@ -251,21 +247,20 @@ class SMTPClient:
                 break
         self.sock.close()
 
-# if _use_ssl:
-#     class SSLSMTPWrapper(SMTPClient):
+class SSLSMTPWrapper(SMTPClient):
 
-#         def __init__(self, arguments, context=None):
-#             if context is None:
-#                 context = ssl._create_stdlib_context()
-#             self.context = context
+    def __init__(self, arguments, context=None):
+        if context is None:
+            context = ssl._create_stdlib_context()
+        self.context = context
 
-#             super().__init__(arguments)
+        super().__init__(arguments)
 
-#         @override
-#         def _prepare_client_socket(self):
-#             self.sock = super()._prepare_client_socket()
-#             self.sock = self.context.wrap_socket(self.sock)
-#             return self.sock
+    @override
+    def _prepare_client_socket(self):
+        self.sock = super()._prepare_client_socket()
+        self.sock = self.context.wrap_socket(self.sock)
+        return self.sock
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -288,10 +283,10 @@ if __name__ == "__main__":
     if not email_validation_regex.match(args.sender):
         raise Exception("Provided sender email is incorrect")
 
-    # if _use_ssl:
-    #     client = SSLSMTPWrapper(args)
-    # else:
-    client = SMTPClient(args)
+    if args.port == SMTP_SSL_PORT:
+        client = SSLSMTPWrapper
+    else:
+        client = SMTPClient
 
-    with SMTPClient(args) as smtp_cli:
+    with client(args) as smtp_cli:
         smtp_cli.send_smtp_message()
